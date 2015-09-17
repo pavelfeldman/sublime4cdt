@@ -20,6 +20,12 @@ class DevToolsSync(sublime_plugin.EventListener):
         self.active_view_ = view
         view.erase_regions('reveal')
 
+    def on_load(self, view):
+        if self.pending_view_ == view:
+            view.run_command('reveal_line', { 'line': self.pending_line_ })
+            self.pending_view_ = None
+            self.pending_line_ = None
+
     def is_muted(self, view):
         return view.id() in self.muted_views_
 
@@ -50,19 +56,17 @@ class DevToolsSync(sublime_plugin.EventListener):
                         view.run_command('save')
                     self.muted_views_.remove(view.id())
         if event['method'] == 'Frontend.revealLocation':
+            print('Reveal location:' + event['params']['file'])
             file = event['params']['file']
             for window in sublime.windows():
                 view = window.open_file(file)
-                if view:
-                    point = view.text_point(event['params']['line'], 0)
-                    region = view.full_line(point)
-                    region.b -= 1
-                    view.sel().clear()
-                    view.sel().add(sublime.Region(region.b, region.b))
-                    view.show(view.sel())
-                    view.add_regions('reveal', [region], 'invalid')
-                    view.show(region)
-                    view.window().focus_view(view)
+                if not view:
+                    return
+                if view.is_loading():
+                    self.pending_view_ = view
+                    self.pending_line_ = event['params']['line']
+                    return
+                view.run_command('reveal_line', { 'line': event['params']['line'] })
 
     def send(self, method, params):
         if not self.socket_:
@@ -78,6 +82,17 @@ class ReplaceContentCommand(sublime_plugin.TextCommand):
         viewport = self.view.viewport_position()
         self.view.replace(edit, sublime.Region(0, self.view.size()), payload)
         self.view.set_viewport_position(viewport)
+
+class RevealLineCommand(sublime_plugin.TextCommand):
+    def run(self, edit, line=None, **kwargs):
+       region = self.view.line(line)
+       self.view.sel().clear()
+       self.view.sel().add(region)
+       self.view.show(self.view.sel())
+       self.view.add_regions('reveal', [region], 'invalid')
+       self.view.show(region)
+       self.view.window().focus_view(self.view)
+  
 
 class SocketClient(WebSocketClient):
     def __init__(self, sync, url, protocols):
