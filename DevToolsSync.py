@@ -20,6 +20,7 @@ class DevToolsSync(sublime_plugin.EventListener):
         self.socket_ = SocketClient(self, 'ws://127.0.0.1:9222/devtools/frontend_api', protocols=['http-only', 'chat'])
         self.id_ = 1
         self.muted_views_ = set()
+        self.file_systems_ = []
 
     def on_activated(self, view):
         self.active_view_ = view
@@ -36,20 +37,29 @@ class DevToolsSync(sublime_plugin.EventListener):
 
     def on_modified(self, view):
         self.remove_markers_(view)
-        if self.is_muted(view):
+        if self.is_muted(view) or not self.is_file_in_project_(view):
             return
-        self.send('Frontend.updateBuffer', {'file': view.file_name(), 'buffer': view.substr(sublime.Region(0, view.size()))});
+        self.send_('Frontend.updateBuffer', {'file': view.file_name(), 'buffer': view.substr(sublime.Region(0, view.size()))});
         view.erase_regions('reveal')
 
     def on_post_save(self, view):
-        if self.is_muted(view):
+        if self.is_muted(view) or not self.is_file_in_project_(view):
             return
-        self.send('Frontend.updateBuffer', {'file': view.file_name(), 'buffer': view.substr(sublime.Region(0, view.size())), 'saved': True});
+        self.send_('Frontend.updateBuffer', {'file': view.file_name(), 'buffer': view.substr(sublime.Region(0, view.size())), 'saved': True});
 
     def on_post_save_async(self, view):
         self.post_filesystems_()
 
-    def dispatch_notification(self, event):
+    def is_file_in_project_(self, view):
+        file_name = view.file_name()
+        if file_name == None:
+            return False
+        for path in self.file_systems_:
+            if file_name.startswith(path):
+                return True
+        return False
+
+    def dispatch_notification_(self, event):
         if not 'method' in event:
             return
         print(event['method'])
@@ -73,7 +83,7 @@ class DevToolsSync(sublime_plugin.EventListener):
                     return
                 view.run_command('reveal_line', { 'line': event['params']['line'] })
 
-    def send(self, method, params):
+    def send_(self, method, params):
         if not self.socket_:
             self.socket_ = SocketClient(self, 'ws://127.0.0.1:9222/devtools/frontend_api', protocols=['http-only', 'chat']);
         self.id_ += 1
@@ -89,10 +99,10 @@ class DevToolsSync(sublime_plugin.EventListener):
             folders = window.folders()
             for folder in folders:
                 configs += glob.glob(folder + '/**/.devtools') + glob.glob(folder + '/.devtools')
-        paths = []
+        self.file_systems_ = []
         for config in configs:
-            paths.append(config[:-10])
-        self.send('Frontend.addFileSystem', { 'paths': paths })
+            self.file_systems_.append(config[:-10])
+        self.send_('Frontend.addFileSystem', { 'paths': self.file_systems_ })
 
 class ReplaceContentCommand(sublime_plugin.TextCommand):
     def run(self, edit, payload=None, **kwargs):
@@ -146,5 +156,4 @@ class SocketClient(WebSocketClient):
         self.sync_.socket_ = None
 
     def received_message(self, m):
-        self.sync_.dispatch_notification(json.loads(str(m)))
-
+        self.sync_.dispatch_notification_(json.loads(str(m)))
