@@ -3,13 +3,17 @@ import json
 import os
 import sys
 import http.client
+import sched
 import sublime
 import sublime_plugin
+import time
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'py'))
 
 from ws4py.websocket import WebSocket
 from ws4py.client.threadedclient import WebSocketClient
+
+pending_reveal_lines_ = {}
 
 class DevToolsSync(sublime_plugin.EventListener):
     def __init__(self):
@@ -22,10 +26,10 @@ class DevToolsSync(sublime_plugin.EventListener):
         self.remove_markers_(view)
 
     def on_load(self, view):
-        if self.pending_view_ == view:
-            view.run_command('reveal_line', { 'line': self.pending_line_ })
-            self.pending_view_ = None
-            self.pending_line_ = None
+        if view.file_name() in pending_reveal_lines_:
+            view.run_command('reveal_line', { 'line': pending_reveal_lines_[view.file_name()] })
+            del pending_reveal_lines_[view.file_name()]
+            view.pending_line_ = None
 
     def is_muted(self, view):
         return view.id() in self.muted_views_
@@ -67,10 +71,6 @@ class DevToolsSync(sublime_plugin.EventListener):
                 view = window.open_file(file)
                 if not view:
                     return
-                if view.is_loading():
-                    self.pending_view_ = view
-                    self.pending_line_ = event['params']['line']
-                    return
                 view.run_command('reveal_line', { 'line': event['params']['line'] })
 
     def send(self, method, params):
@@ -100,18 +100,24 @@ class ReplaceContentCommand(sublime_plugin.TextCommand):
             return
         viewport = self.view.viewport_position()
         self.view.replace(edit, sublime.Region(0, self.view.size()), payload)
-        self.view.set_viewport_position(viewport)
+        scheduler = sched.scheduler(time.time, time.sleep)
+        scheduler.enter(0, 1, self.set_viewport_position_, (self.view, viewport))
+        scheduler.run()
+
+    def set_viewport_position_(self, view, viewport):
+        view.set_viewport_position(viewport)
 
 class RevealLineCommand(sublime_plugin.TextCommand):
     def run(self, edit, line=None, **kwargs):
+       if self.view.is_loading():
+           pending_reveal_lines_[self.view.file_name()] = line
+           return
        point = self.view.text_point(line, 0)
        region = self.view.line(point)
        self.view.sel().clear()
-       self.view.show(self.view.sel())
        self.view.add_regions('reveal', [region], 'invalid')
-       self.view.show(region)
+       self.view.show(sublime.Region(region.a, region.a))
        self.view.window().focus_view(self.view)
-  
 
 class SocketClient(WebSocketClient):
     def __init__(self, sync, url, protocols):
