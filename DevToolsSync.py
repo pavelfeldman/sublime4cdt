@@ -8,10 +8,13 @@ import sublime
 import sublime_plugin
 import time
 
+from functools import partial
+
 sys.path.append(os.path.join(os.path.dirname(__file__), 'py'))
 
 from ws4py.websocket import WebSocket
 from ws4py.client.threadedclient import WebSocketClient
+from diff.diff_match_patch import diff_match_patch
 
 pending_reveal_lines_ = {}
 
@@ -106,28 +109,44 @@ class DevToolsSync(sublime_plugin.EventListener):
 
 class ReplaceContentCommand(sublime_plugin.TextCommand):
     def run(self, edit, payload=None, **kwargs):
-        if self.view.substr(sublime.Region(0, self.view.size())) == payload:
+        old_content = self.view.substr(sublime.Region(0, self.view.size()))
+        if old_content == payload:
             return
         viewport = self.view.viewport_position()
         self.view.replace(edit, sublime.Region(0, self.view.size()), payload)
-        scheduler = sched.scheduler(time.time, time.sleep)
-        scheduler.enter(0, 1, self.set_viewport_position_, (self.view, viewport))
-        scheduler.run()
+        diff = diff_match_patch().diff_lineMode(old_content, payload, time.time() + 10)
+        offset = 0
+        begin = 0
+        end = 0
+        for item in diff:
+            if item[0] == 1 and begin == 0:
+                begin = offset
+            if item[0] != -1:
+                offset += len(item[1])
+            if item[0] == 1:
+                end = offset
+        self.view.add_regions('diff', [sublime.Region(begin, end)], 'comment')
+        self.view.set_viewport_position(viewport)
+        sublime.set_timeout(partial(self.set_viewport_position_, viewport), 0)
+        sublime.set_timeout(self.clear_diff_markers_, 150)
 
-    def set_viewport_position_(self, view, viewport):
-        view.set_viewport_position(viewport)
+    def set_viewport_position_(self, viewport):
+        self.view.set_viewport_position(viewport)
+
+    def clear_diff_markers_(self):
+        self.view.erase_regions('diff')
 
 class RevealLineCommand(sublime_plugin.TextCommand):
     def run(self, edit, line=None, **kwargs):
-       if self.view.is_loading():
-           pending_reveal_lines_[self.view.file_name()] = line
-           return
-       point = self.view.text_point(line, 0)
-       region = self.view.line(point)
-       self.view.sel().clear()
-       self.view.add_regions('reveal', [region], 'invalid')
-       self.view.show(sublime.Region(region.a, region.a))
-       self.view.window().focus_view(self.view)
+        if self.view.is_loading():
+            pending_reveal_lines_[self.view.file_name()] = line
+            return
+        point = self.view.text_point(line, 0)
+        region = self.view.line(point)
+        self.view.sel().clear()
+        self.view.add_regions('reveal', [region], 'invalid')
+        self.view.show(sublime.Region(region.a, region.a))
+        self.view.window().focus_view(self.view)
 
 class SocketClient(WebSocketClient):
     def __init__(self, sync, url, protocols):
